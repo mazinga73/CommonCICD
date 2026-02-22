@@ -1,0 +1,48 @@
+name: Build [SERVICE_NAME] Docker Container
+
+on:
+  push:
+    paths:
+      - '[PATH_SERVICENAME]/**'
+      - '.github/workflows/[SERVICE_NAME]_CI.yaml'
+
+permissions:
+  packages: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Build Docker image
+      run: |
+        docker build -t ghcr.io/${{ github.repository_owner }}/[GITHUB_REPOSITORY]/[SERVICE_NAME]:${{ github.run_id }} -f [PATH_SERVICE_NAME]/Dockerfile .
+        docker tag ghcr.io/${{ github.repository_owner }}/[GITHUB_REPOSITORY]/[SERVICE_NAME]:${{ github.run_id }} ghcr.io/${{ github.repository_owner }}/[GITHUB_REPOSITORY]/[SERVICE_NAME]:latest
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v2
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.TOKEN }}
+
+    - name: Push Docker images to GitHub Packages
+      run: |
+        docker push ghcr.io/${{ github.repository_owner }}/[GITHUB_REPOSITORY]/[SERVICE_NAME]:${{ github.run_id }}
+        docker push ghcr.io/${{ github.repository_owner }}/[GITHUB_REPOSITORY]/[SERVICE_NAME]:latest
+
+    - name: Install Helm
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Install or Upgrade Chart
+      run: |
+        if helm list -q | grep -q '^[HELM_CHART_NAME]$'; then
+          helm uninstall [HELM_CHART_NAME]
+        fi
+
+        helm install [HELM_CHART_NAME] [HELM_CHART_PATH]/[HELM_CHART_NAME]

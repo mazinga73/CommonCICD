@@ -1,0 +1,4 @@
+apiVersion: v2
+name: [HELM_CHART_NAME]
+version: 0.1.0
+description: Helm chart for [SERVICE_NAME] application
