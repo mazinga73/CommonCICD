@@ -21,7 +21,7 @@ jobs:
   # Running natively on Raspberry Pi 5 (arm64) eliminates QEMU cross-compilation,
   # which was the primary bottleneck when building linux/arm64 images on x64.
   build:
-    runs-on: [self-hosted, Raspberry5]
+    runs-on: self-hosted
     defaults:
       run:
         working-directory: frontend
@@ -69,7 +69,7 @@ jobs:
       uses: docker/setup-buildx-action@v3
 
     - name: Log in to Container Registry
-      uses: docker/login-action@v3
+      uses: docker/login-action@v2
       with:
         registry: ${{ env.REGISTRY }}
         username: ${{ github.actor }}
