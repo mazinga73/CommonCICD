@@ -1,0 +1,136 @@
+name: Build Frontend image (ARM64) on Raspberry Pi 5
+
+permissions:
+  contents: read
+  packages: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-build.yml'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}-frontend
+
+jobs:
+  # Single job: lint/typecheck/build on host (cached npm), then package into Docker.
+  # Running natively on Raspberry Pi 5 (arm64) eliminates QEMU cross-compilation,
+  # which was the primary bottleneck when building linux/arm64 images on x64.
+  build:
+    runs-on: [self-hosted, Raspberry5]
+    defaults:
+      run:
+        working-directory: frontend
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # cache: 'npm' restores ~/.npm across runs so npm ci reads from local disk
+    # instead of downloading packages from the registry each time.
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: frontend/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Run linter
+      run: npm run lint -- --max-warnings 10
+
+    - name: Type check
+      run: npx tsc --noEmit
+
+    # Build the React app on the host runner so that the Docker image only needs
+    # to package the compiled static files into nginx (no Node.js layer at all).
+    - name: Build app
+      run: npm run build
+      env:
+        NODE_ENV: production
+        GENERATE_SOURCEMAP: 'false'
+        DISABLE_ESLINT_PLUGIN: 'false'
+        TSC_COMPILE_ON_ERROR: 'true'
+
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=raw,value=latest
+
+    # Dockerfile.ci skips the Node.js build stage entirely — it just copies
+    # the pre-built ./build directory into an nginx:alpine image.
+    # Dockerfile.ci.dockerignore overrides the main .dockerignore so that
+    # the build/ directory (excluded in production builds) is included here.
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        file: ./frontend/Dockerfile.ci
+        platforms: linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=local,src=/tmp/buildx-cache-frontend
+        cache-to: type=local,dest=/tmp/buildx-cache-frontend-new,mode=max
+        build-args: |
+          BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+          REVISION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.revision'] }}
+
+    - name: Rotate cache
+      run: |
+        rm -rf /tmp/buildx-cache-frontend
+        mv /tmp/buildx-cache-frontend-new /tmp/buildx-cache-frontend
+
+    - name: Output image
+      id: image
+      run: |
+        echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:master" >> $GITHUB_OUTPUT
+
+  deploy-production:
+    needs: build
+    runs-on: [self-hosted, Raspberry5]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Helm
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+    - name: Install or Upgrade Chart
+      run: |
+        if helm list -q | grep -q '^[HELM_CHART_NAME]$'; then
+          helm uninstall [HELM_CHART_NAME]
+        fi
+
+        helm install [HELM_CHART_NAME] [HELM_CHART_PATH]/[HELM_CHART_NAME]
+    
